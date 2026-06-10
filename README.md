@@ -25,6 +25,57 @@ If the request is rejected by either layer, the execution terminates early at th
 
 The system **fails closed**, meaning that ambiguous or unclear requests are rejected by default.
 
+## Project Structure & Architecture
+
+### File Directory & Roles
+
+Here is a breakdown of the repository files and their specific responsibilities in this project:
+
+```text
+├── app/
+│   ├── __init__.py         # Package initialization
+│   ├── main.py             # FastAPI entrypoint, exception handlers, and endpoints
+│   ├── graph.py            # LangGraph state machine flow and routing configuration
+│   ├── guardrails.py       # Deterministic programmatic & optional semantic LLM guardrails
+│   ├── responder.py        # LangChain LLM answer generator (with local rule-based fallback)
+│   └── schemas.py          # Pydantic data schemas for API requests and JSON responses
+├── tests/
+│   └── test_agent_api.py    # Pytest suite verifying in-scope, out-of-scope, and ethical rules
+├── Dockerfile              # Docker image configuration
+├── docker-compose.yml      # Docker Compose configuration with host key forwarding
+├── requirements.txt        # Third-party Python dependencies
+└── README.md               # Detailed project documentation and testing manuals
+```
+
+### Query Flow Architecture
+
+The following sequence shows how a query is received by FastAPI, controlled by LangGraph, evaluated by the double-layer guardrail, and ultimately returned as a JSON-only response:
+
+```mermaid
+graph TD
+    Client[Client Query] -->|POST /agent/query| API[FastAPI app/main.py]
+    API -->|run_agent| Graph[LangGraph app/graph.py]
+    Graph -->|Node 1: guardrail| Guardrail[Guardrails app/guardrails.py]
+    
+    Guardrail -->|1. Programmatic Check| Programmatic[Regex & Keyword Check]
+    Programmatic -->|Pass & API Key Available| LLMCheck[LLM Semantic Check]
+    Programmatic -->|Fail| Disallowed[Reject Request]
+    LLMCheck -->|Pass| Allowed[Allow Request]
+    LLMCheck -->|Fail| Disallowed
+    
+    Guardrail -->|Decision| Route{Conditional Edge}
+    
+    Route -->|If Disallowed| EndReject[Early Termination: END]
+    EndReject -->|JSON Response| ClientReject[status: rejected, reason: Request is outside...]
+    
+    Route -->|If Allowed| RespondNode[Node 2: respond]
+    RespondNode -->|invoke| Responder[Responder app/responder.py]
+    Responder -->|Generate Answer| EndSuccess[Success Termination: END]
+    EndSuccess -->|JSON Response| ClientSuccess[status: success, response: answer: ...]
+```
+
+---
+
 ## API Endpoints
 
 ### 1. Health Status
