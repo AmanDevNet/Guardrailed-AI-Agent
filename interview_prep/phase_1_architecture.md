@@ -1,95 +1,29 @@
-# Phase 1: High-Level Project & Architecture Breakdown
+# Phase 1: What the Project is and How it Works (Explained Simply)
 
-This document covers the high-level architecture, design decisions, and technology stack justifications for the Guardrailed AI Agent.
-
----
-
-## 1. Project Overview & Business Value
-
-### What is the project?
-It is a **FastAPI-powered agent** that answers high-level questions about web scraping while blocking out-of-scope, malicious, or general programming queries. It functions as a **scoped educational assistant**.
-
-### What problem does it solve?
-Deploying conversational LLMs in production carries risks:
-1. **Scope Creep / Resource Abuse**: Users using your web scraping assistant to write code to scrape their own targets, or asking general python programming questions, which wastes expensive LLM tokens.
-2. **Legal and Ethical Risks**: Generating code to bypass CAPTCHAs, scrape private personal data without consent, or bypass paywalls can expose the company to legal liabilities.
-3. **Prompt Injection / Adversarial Input**: Users trying to override system prompts.
-
-This project solves these issues by placing a **deterministic + semantic guardrail** in front of the response generation. It **fails closed**, meaning that if there is any ambiguity, the query is blocked before it ever touches the responder node.
+Use this guide to explain the project setup in a simple, natural way during the interview. No complicated terms—just clear, human explanations.
 
 ---
 
-## 2. Tech Stack Justification (Why this stack?)
+## 1. What does this project do?
+"Basically, this is a web scraping Q&A assistant. It answers general questions about web scraping—like how to deal with JavaScript websites, headless browsers, or legal stuff—but it blocks users from asking for actual code, scripts, or instructions to hack and bypass CAPTCHAs. 
 
-| Technology | Role | Why We Chose It | Alternatives & Why We Rejected Them |
-| :--- | :--- | :--- | :--- |
-| **FastAPI** | REST API Server | Fast performance, asynchronous support, native Pydantic validation, and excellent integration with testing clients. | **Flask**: Synchronous by default, lacks automatic validation.<br>**Django**: Too heavy and slow for a microservice. |
-| **LangGraph** | Flow Orchestration | Models agent workflows as a state machine. Allows setting strict execution nodes (Guardrail Node $\rightarrow$ Conditional Router $\rightarrow$ Responder Node). Cyclic flows and granular state management are native. | **Standard Python Script (Sequential)**: Becomes spaghetti code as routing rules grow; lacks clean tracing.<br>**LangChain Expressive Language (LCEL) Chains**: Good for straight chains, but terrible for state-based routing or loops. |
-| **LangChain** | LLM Interface | Provides unified abstractions for prompt templating, LLM integrations (OpenAI / Gemini), and structured outputs. | **Raw API SDKs (openai/google-genai)**: Locks the system to a single provider and requires writing custom parsing code for structured models. |
-| **Pydantic (v2)** | Data Validation | Forces type safety on inputs (`QueryRequest`) and outputs (`SuccessResponse`, `RejectionResponse`, `GuardrailOutput`). | **Native Dicts / JSON Schema**: Lacks run-time type coercion, IDE autocompletion, and validation feedback. |
-| **Pytest** | Test Automation | Fast, pythonic, and integrates perfectly with `FastAPI.testclient` to run parallel tests mock-free. | **Unittest**: Verbose boilerplate, less pythonic assertions. |
+If someone asks a question that is borderline or confusing, the system plays it safe and blocks it. We call this a 'fail-closed' setup—if we aren't sure, we just reject it."
 
 ---
 
-## 3. Query Flow Architecture (Step-by-Step)
+## 2. Why we chose these tools (In simple words)
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Client as Client Browser/Terminal
-    participant API as FastAPI (app/main.py)
-    participant Graph as LangGraph (app/graph.py)
-    participant Guardrail as Guardrail Node (app/guardrails.py)
-    participant Responder as Responder Node (app/responder.py)
-    participant LLM as External LLM (OpenAI/Gemini)
-
-    Client->>API: POST /agent/query {query}
-    API->>Graph: run_agent(query)
-    Graph->>Guardrail: Invoke Node: guardrail
-    
-    Note over Guardrail: Step A: Programmatic Check (Regex / Keywords)
-    alt Programmatic Check Fails
-        Guardrail-->>Graph: Set allowed = False, reason = "Request is outside..."
-    else Programmatic Check Passes
-        alt No API Key / Offline
-            Guardrail-->>Graph: Set allowed = True (Skip LLM Check)
-        else LLM API Key Available
-            Guardrail->>LLM: Step B: Semantic Check (GUARDRAIL_PROMPT)
-            LLM-->>Guardrail: Return JSON {allowed: bool, reason: str}
-            Guardrail-->>Graph: Set allowed based on LLM output
-        end
-    end
-
-    Note over Graph: Router Check: route_after_guardrail
-    alt allowed is False
-        Graph-->>API: Return Rejection State (Early Terminate END)
-        API-->>Client: HTTP 200 {"status": "rejected", "reason": "..."}
-    else allowed is True
-        Graph->>Responder: Invoke Node: respond
-        alt LLM API Key Available
-            Responder->>LLM: Generate Answer (RESPONDER_PROMPT)
-            LLM-->>Responder: Return educational text answer
-        else Offline Fallback
-            Note over Responder: Match keyword template logic
-        end
-        Responder-->>Graph: Set answer = generated_text, status = "success"
-        Graph-->>API: Return Success State (Terminate END)
-        API-->>Client: HTTP 200 {"status": "success", "response": {"answer": "..."}}
-    end
-```
+* **FastAPI**: "It's my go-to for building small APIs in Python. It's super fast, supports async out of the box, and uses Pydantic to check if incoming data is correct before we run it. Django is way too big for this, and Flask doesn't have native type-checking."
+* **LangGraph**: "This handles the step-by-step flow. Instead of writing a messy pile of `if/else` checks in python, LangGraph let us build a state machine. First, it goes to the guardrail check node. If that's good, it goes to the responder node. If not, it stops early. It keeps our code neat and ready to scale."
+* **LangChain**: "This is just our helper library to talk to the LLMs. It lets us write prompts and format the outputs easily, so we can swap between OpenAI and Gemini without changing our main code."
+* **Pytest**: "It's just the easiest and cleanest way to write Python tests. We can mock requests and check if our guardrails are actually blocking bad queries in milliseconds."
 
 ---
 
-## 4. Key Architectural Design Patterns
-
-### A. Fail-Closed Default
-If a user submits an empty query, a random character sequence, or a question where intent is ambiguous, the system defaults to `allowed: False`. It is better to reject a borderline safe query than to accidentally serve malicious code or display out-of-scope behavior.
-
-### B. Programmatic-First Defense
-Before calling the LLM for semantic guardrails, the query must pass regex filters. 
-- **Performance benefit**: Minimizes API calls, reducing system latency for obvious bad queries.
-- **Cost benefit**: Avoids executing token-heavy LLM guardrail requests.
-- **Robustness**: Hard blocks common exploits (like "Write a scraper script") deterministically.
-
-### C. Offline Resiliency (Local Fallback)
-If the system detects that environment variables for AI models (`OPENAI_API_KEY`, etc.) are missing, it does not crash. It automatically downgrades the guardrail to programmatic-only and redirects the responder to regex-based static templates. This ensures unit tests and local mock servers run instantly offline out-of-the-box.
+## 3. How a query flows through the code (Step-by-Step)
+1. **User asks a question**: The client sends a query to our FastAPI server (`POST /agent/query`).
+2. **First Check (Basic Rules)**: The query goes to our guardrail node. We check it using simple python code (regex and keywords) to catch obvious code requests or bad words. If it fails, we block it immediately.
+3. **Second Check (Smart LLM Check)**: If the query looks safe and we have LLM API keys set up, we ask the LLM to read it. The LLM decides if the query is genuinely safe or if it's a clever prompt injection. If the LLM says no, we block it.
+4. **Router Decision**: Our code checks if the query passed both layers. If it did, it routes the query to the responder node. If not, it terminates early and returns a rejected JSON.
+5. **Answer Generation**: If it's safe, the responder node runs the LLM (or a local template if we are offline) to write a high-level plain text answer.
+6. **Result**: FastAPI returns the JSON response (either success with the answer, or rejected with the reason).
