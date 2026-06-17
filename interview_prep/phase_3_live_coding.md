@@ -1,44 +1,172 @@
-# Phase 3: Live Coding Scenarios (Explained Simply)
+# Phase 3: Live Coding Scenarios (Exactly What to Copy and Paste)
 
-This guide shows you how to explain your code edits to an interviewer in a simple, natural way if they ask you to make live changes on a call.
+This guide shows you the exact files, code blocks to search for, code modifications, and commands to run. Follow these steps if you are asked to share your screen and write code.
 
 ---
 
-## Scenario A: Add a new topic (e.g., Scraping HTML Tables)
+## Scenario A: Add a New Allowed Topic (e.g., HTML Tables)
 **Interviewer says:** *"Can you add a 6th topic, 'Scraping dynamic HTML tables', and write a test for it?"*
 
-### How to explain what you're doing:
-1. "First, I'll go to `app/guardrails.py`. I need to add the new topic to `ALLOWED_TOPICS` so it shows up in the scope endpoint. I'll also add it to the LLM system prompt so the model knows it's allowed."
-2. "Next, I need to make sure our regex/programmatic check doesn't block it. I'll add table-related terms—like 'table' or 'dataframe'—to our check list in `validate_scope_programmatic`."
-3. "Then, in `app/responder.py`, I'll update the offline fallback responder so that if we test offline, it has a pre-written response for table scraping."
-4. "Finally, I'll open `tests/test_agent_api.py`, add a test case that queries 'how to scrape tables safely', run `pytest` in the terminal, and verify it passes."
+### Step 1: Open [guardrails.py](file:///d:/AI%20Projects/PROJECTS/ML%20Projects/guardrailed-ai-agent-assignment/app/guardrails.py)
+1. **Search (Ctrl+F) for:** `ALLOWED_TOPICS = [` (around lines 8–15).
+   * **Replace it with:**
+     ```python
+     ALLOWED_TOPICS = [
+         "Web scraping concepts",
+         "JavaScript-rendered websites",
+         "CAPTCHA detection and high-level handling strategies without bypass instructions",
+         "Headless browsers used for scraping",
+         "Ethical and legal considerations of web scraping",
+         "Scraping dynamic HTML tables",  # <-- Add this line
+     ]
+     ```
+2. **Search (Ctrl+F) for:** `_ETHICS_TERMS = {` (around lines 60–71).
+   * **Add below it:**
+     ```python
+     _TABLE_TERMS = {"table", "tables", "dataframe", "html table"}
+     ```
+3. **Search (Ctrl+F) for:** `allowed = any(` inside the `validate_scope_programmatic` function (around lines 250–265).
+   * **Replace the block with:**
+     ```python
+         allowed = any(
+             [
+                 _contains_any(text, _SCRAPING_TERMS),
+                 _contains_any(text, _JS_RENDERED_TERMS),
+                 _contains_any(text, _CAPTCHA_TERMS),
+                 _contains_any(text, _HEADLESS_TERMS),
+                 _contains_any(text, _ETHICS_TERMS),
+                 _contains_any(text, _TABLE_TERMS),  # <-- Add this line
+             ]
+         )
+     ```
+4. **Search (Ctrl+F) for:** `GUARDRAIL_PROMPT = ChatPromptTemplate.from_messages([` (around lines 170–190).
+   * **Add below item 5** in the string prompt:
+     ```text
+     6. Scraping dynamic HTML tables
+     ```
+
+### Step 2: Open [responder.py](file:///d:/AI%20Projects/PROJECTS/ML%20Projects/guardrailed-ai-agent-assignment/app/responder.py)
+1. **Search (Ctrl+F) for:** `def _build_answer_fallback` (around line 8).
+   * **Add at the beginning of the checks** (right below `text = query.lower()` around line 10):
+     ```python
+         if "table" in text or "dataframe" in text:
+             return (
+                 "Scraping dynamic HTML tables involves identifying table tags (<table>, <tr>, <td>), "
+                 "waiting for elements to render in dynamic tables, and parsing row data into structured formats "
+                 "like lists or pandas DataFrames. Avoid downloading tables in tight loops to prevent rate limits."
+             )
+     ```
+
+### Step 3: Open [test_agent_api.py](file:///d:/AI%20Projects/PROJECTS/ML%20Projects/guardrailed-ai-agent-assignment/tests/test_agent_api.py)
+1. **Go to the very bottom of the file** and paste this new test:
+     ```python
+     def test_table_scraping_query_is_allowed():
+         response = client.post(
+             "/agent/query",
+             json={"query": "How can I scrape dynamic HTML tables safely?"},
+         )
+         assert response.status_code == 200
+         body = response.json()
+         assert body["status"] == "success"
+         assert "tables" in body["response"]["answer"].lower()
+     ```
+
+### Step 4: Verify
+Open your PowerShell terminal and run:
+```powershell
+$env:PYTHONPATH="."
+.venv\Scripts\pytest
+```
 
 ---
 
-## Scenario B: Change the rejection reason to be specific
-**Interviewer says:** *"Right now, every rejection says the same thing. Can you make it return a specific reason, like 'Writing code is not allowed'?"*
+## Scenario B: Customize Rejection Reasons
+**Interviewer says:** *"Can you change the guardrail so that general coding queries return 'Writing code is not allowed' instead of the generic error?"*
 
-### How to explain what you're doing:
-1. "I'll go to `app/guardrails.py` and modify `validate_scope_programmatic`. 
-2. Currently, we return `REJECTION_REASON` for every check. I'll change each return block to have its own message. E.g., for `_GENERAL_PROGRAMMING_PATTERNS`, I'll return `GuardrailDecision(False, 'Writing code or debugging is out-of-scope')`."
-3. "Note that this will break some of our unit tests because they check for the exact default message. I'll need to go to `tests/test_agent_api.py` and update the expected response strings in our assertions."
+### Step 1: Open [guardrails.py](file:///d:/AI%20Projects/PROJECTS/ML%20Projects/guardrailed-ai-agent-assignment/app/guardrails.py)
+1. **Search (Ctrl+F) for:** `if _matches_any(text, _GENERAL_PROGRAMMING_PATTERNS):` inside the `validate_scope_programmatic` function (around line 250).
+   * **Replace that return statement:**
+     ```python
+     if _matches_any(text, _GENERAL_PROGRAMMING_PATTERNS):
+         return GuardrailDecision(False, "Writing code, scripts, or debugging is out-of-scope. I only provide educational explanations.")
+     ```
+
+### Step 2: Open [test_agent_api.py](file:///d:/AI%20Projects/PROJECTS/ML%20Projects/guardrailed-ai-agent-assignment/tests/test_agent_api.py)
+1. **Search (Ctrl+F) for:** `test_out_of_scope_query_is_rejected` (around line 37).
+   * **Update the expected string in the assert line:**
+     ```python
+     def test_out_of_scope_query_is_rejected():
+         response = client.post("/agent/query", json={"query": "Write a Python function to sort an array"})
+
+         assert response.status_code == 200
+         assert response.json() == {
+             "status": "rejected", 
+             "reason": "Writing code, scripts, or debugging is out-of-scope. I only provide educational explanations."
+         }
+     ```
+
+### Step 3: Verify
+Run:
+```powershell
+$env:PYTHONPATH="."
+.venv\Scripts\pytest
+```
 
 ---
 
-## Scenario C: Always run the LLM check (No early exit)
-**Interviewer says:** *"What if we want to run the LLM check on every single request, even if the regex checks fail, so we can log comparisons?"*
+## Scenario C: Force LLM Evaluation (No Early Exit)
+**Interviewer says:** *"Can we run the LLM check on every single request, even if programmatic rules fail, so we can log comparisons?"*
 
-### How to explain what you're doing:
-1. "I'll go to `app/guardrails.py` and look at the `validate_scope` coordinator function.
-2. Currently, if programmatic checks fail, we return immediately. I'll change it to run the programmatic check, run the LLM check, and then evaluate both.
-3. If either check fails, we return `allowed=False`. This lets us run both checks for every query and print/log the results without changing the fail-closed behavior."
+### Step 1: Open [guardrails.py](file:///d:/AI%20Projects/PROJECTS/ML%20Projects/guardrailed-ai-agent-assignment/app/guardrails.py)
+1. **Search (Ctrl+F) for:** `def validate_scope(query: str) -> GuardrailDecision:` (around lines 250–260).
+   * **Replace the entire function code with this:**
+     ```python
+     def validate_scope(query: str) -> GuardrailDecision:
+         # 1. Run programmatic check
+         prog_decision = validate_scope_programmatic(query)
+         
+         # 2. Run LLM semantic check if keys exist (do not early return)
+         llm_decision = GuardrailDecision(True)
+         if has_llm_credentials():
+             llm_decision = validate_scope_llm(query)
+             
+         # Log comparison
+         print(f"Programmatic allowed={prog_decision.allowed} | LLM allowed={llm_decision.allowed}")
+         
+         # Fail-closed: block if EITHER rejects
+         if not prog_decision.allowed:
+             return prog_decision
+         if not llm_decision.allowed:
+             return llm_decision
+             
+         return GuardrailDecision(True)
+     ```
+
+### Step 2: Verify
+Run:
+```powershell
+$env:PYTHONPATH="."
+.venv\Scripts\pytest
+```
 
 ---
 
-## Scenario D: Bypass the guardrail check node
-**Interviewer says:** *"How can we test the responder node's answers on any raw inputs without the guardrail blocking them?"*
+## Scenario D: Bypass Guardrail Node in LangGraph
+**Interviewer says:** *"How can we bypass the guardrail step in our graph blueprint for testing?"*
 
-### How to explain what you're doing:
-1. "I'll go to `app/graph.py` where the LangGraph is defined.
-2. The easiest way is to change the starting node of our graph. I can change `graph.set_entry_point('guardrail')` to `graph.set_entry_point('respond')`.
-3. Alternatively, I can go to the router function `route_after_guardrail` and just force it to return `'respond'` instead of checking `state.get('allowed')`."
+### Step 1: Open [graph.py](file:///d:/AI%20Projects/PROJECTS/ML%20Projects/guardrailed-ai-agent-assignment/app/graph.py)
+1. **Search (Ctrl+F) for:** `def build_graph():` (around line 41).
+   * **Look for:** `graph.set_entry_point("guardrail")` (around line 45).
+   * **Change it to:**
+     ```python
+     graph.set_entry_point("respond")
+     ```
+   * *This forces LangGraph to skip the guardrail step and go straight to the answer generator.*
+
+### Step 2: Verify
+Run:
+```powershell
+$env:PYTHONPATH="."
+.venv\Scripts\pytest
+```
+*(Note: Out-of-scope tests will fail because they are no longer blocked).*
