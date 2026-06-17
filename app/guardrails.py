@@ -5,6 +5,11 @@ from typing import Literal
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 
+# =====================================================================
+# ALLOWED TOPIC DEFINITIONS
+# =====================================================================
+# This list defines the explicit scope boundaries. Any query that does 
+# not fit neatly into these topics must be rejected.
 ALLOWED_TOPICS = [
     "Web scraping concepts",
     "JavaScript-rendered websites",
@@ -13,62 +18,50 @@ ALLOWED_TOPICS = [
     "Ethical and legal considerations of web scraping",
 ]
 
+# Static fallback message used for all out-of-scope query rejections.
+# This prevents leaking information about why a request was rejected,
+# keeping API behavior consistent.
 REJECTION_REASON = "Request is outside the agent's allowed scope"
 
+
+# =====================================================================
+# POSITIVE KEYWORD LISTS (Programmatic Allowed-Scope Checks)
+# =====================================================================
+# To pass the programmatic check, a query must contain at least one term
+# from these sets. These act as positive qualifiers.
+
 _SCRAPING_TERMS = {
-    "scrape",
-    "scraping",
-    "crawler",
-    "crawling",
-    "spider",
-    "parse html",
-    "html parsing",
-    "extract data",
-    "web data extraction",
-    "robots.txt",
-    "rate limit",
-    "user agent",
+    "scrape", "scraping", "crawler", "crawling", "spider", 
+    "parse html", "html parsing", "extract data", "web data extraction", 
+    "robots.txt", "rate limit", "user agent",
 }
 
 _JS_RENDERED_TERMS = {
-    "javascript-rendered",
-    "javascript rendered",
-    "js-rendered",
-    "js rendered",
-    "spa",
-    "single page app",
-    "dynamic website",
-    "dynamic page",
-    "client-side rendering",
-    "client side rendering",
+    "javascript-rendered", "javascript rendered", "js-rendered", "js rendered",
+    "spa", "single page app", "dynamic website", "dynamic page",
+    "client-side rendering", "client side rendering",
 }
 
 _CAPTCHA_TERMS = {
-    "captcha",
-    "recaptcha",
-    "hcaptcha",
+    "captcha", "recaptcha", "hcaptcha",
 }
 
 _HEADLESS_TERMS = {
-    "headless browser",
-    "playwright",
-    "puppeteer",
-    "selenium",
-    "browser automation",
+    "headless browser", "playwright", "puppeteer", "selenium", "browser automation",
 }
 
 _ETHICS_TERMS = {
-    "ethical scraping",
-    "ethics",
-    "legal scraping",
-    "legal considerations",
-    "terms of service",
-    "tos",
-    "permission",
-    "consent",
-    "compliance",
+    "ethical scraping", "ethics", "legal scraping", "legal considerations",
+    "terms of service", "tos", "permission", "consent", "compliance",
 }
 
+
+# =====================================================================
+# NEGATIVE FILTER PATTERNS (Regex-based Hard Rejections)
+# =====================================================================
+
+# 1. Illegal Intent: Intercepts bypass attempts or hacking intents.
+# e.g., "bypass captcha", "solve recaptcha automatically", "evade rate limits".
 _ILLEGAL_INTENT_PATTERNS = [
     r"\bbypass\b.*\b(captcha|recaptcha|hcaptcha|rate limit|block|paywall|login)\b",
     r"\b(captcha|recaptcha|hcaptcha)\b.*\b(bypass|solve automatically|evade|crack|defeat)\b",
@@ -80,6 +73,10 @@ _ILLEGAL_INTENT_PATTERNS = [
     r"\bwithout permission\b",
 ]
 
+# 2. General Programming: Block requests asking the model to write scripts,
+# code, programs, crawlers, or debug coding issues.
+# Matches common verbs like write, generate, implement, build, show me, give me,
+# followed by nouns like code, script, function, scraper.
 _GENERAL_PROGRAMMING_PATTERNS = [
     r"\bwrite (a )?(python|javascript|java|c\+\+|go|rust|sql)\b",
     r"\bwrite\b.*\b(code|script|function|class|program|scraper|crawler|parser|spider)\b",
@@ -105,12 +102,14 @@ _GENERAL_PROGRAMMING_PATTERNS = [
     r"\bsort (an )?array\b",
 ]
 
+# 3. Casual conversation: Intercepts generic chatty inputs to enforce educational utility.
 _CASUAL_PATTERNS = [
     r"^\s*(hi|hello|hey|good morning|good evening|thanks|thank you)\s*[!.?]*\s*$",
     r"\bhow are you\b",
     r"\btell me a joke\b",
 ]
 
+# 4. Sensitive Out-of-Scope: Intercepts domains like medical, legal advice, politics, or personal issues.
 _SENSITIVE_OUT_OF_SCOPE_PATTERNS = [
     r"\bmedical\b",
     r"\bdoctor\b",
@@ -126,19 +125,26 @@ _SENSITIVE_OUT_OF_SCOPE_PATTERNS = [
 
 @dataclass(frozen=True)
 class GuardrailDecision:
+    """Immutable structure to hold guardrail validation results."""
     allowed: bool
     reason: str | None = None
 
 
 def _contains_any(text: str, terms: set[str]) -> bool:
+    """Helper: Checks if any exact string term from the set is present in the lowercased query."""
     return any(term in text for term in terms)
 
 
 def _matches_any(text: str, patterns: list[str]) -> bool:
+    """Helper: Performs regular expression search for a list of pattern strings."""
     return any(re.search(pattern, text) for pattern in patterns)
 
 
 def has_llm_credentials() -> bool:
+    """
+    Checks if API keys are available in the current environment.
+    If none are found, the system defaults to programmatic validation only.
+    """
     return bool(
         os.environ.get("OPENAI_API_KEY")
         or os.environ.get("GEMINI_API_KEY")
@@ -147,6 +153,10 @@ def has_llm_credentials() -> bool:
 
 
 def get_llm():
+    """
+    Instantiates the target LLM client based on available environment credentials.
+    Sets temperature=0.0 to enforce deterministic evaluation and reduce random deviations.
+    """
     if os.environ.get("OPENAI_API_KEY"):
         try:
             from langchain_openai import ChatOpenAI
@@ -164,10 +174,16 @@ def get_llm():
 
 
 class GuardrailOutput(BaseModel):
+    """
+    Pydantic schema passed to langchain's with_structured_output.
+    Forces the LLM to output structured JSON matching these exact field descriptions.
+    """
     allowed: bool = Field(description="Whether the query is strictly within the allowed scope of the agent.")
     reason: str = Field(description="The rejection reason if not allowed. Must be 'Request is outside the agent's allowed scope'. Otherwise leave empty.")
 
 
+# System prompt defining the guardrail instructions for the LLM.
+# Includes detailed allowed vs out-of-scope conditions and the fail-closed instruction.
 GUARDRAIL_PROMPT = ChatPromptTemplate.from_messages([
     ("system", (
         "You are an AI guardrail validator for a web scraping agent.\n"
@@ -193,13 +209,21 @@ GUARDRAIL_PROMPT = ChatPromptTemplate.from_messages([
 
 
 def validate_scope_llm(query: str) -> GuardrailDecision:
+    """
+    Semantic LLM Validation Layer.
+    Uses LangChain to query the LLM, forcing a structured JSON output (GuardrailOutput).
+    If an LLM exception occurs, it falls back to True, relying on the fact that
+    programmatic validation has already passed (ensuring reliability during API issues).
+    """
     llm = get_llm()
     if not llm:
         return GuardrailDecision(True)
     try:
+        # with_structured_output guarantees the LLM's response matches our Pydantic schema
         structured_llm = llm.with_structured_output(GuardrailOutput)
         chain = GUARDRAIL_PROMPT | structured_llm
         result = chain.invoke({"query": query})
+        
         if not result.allowed:
             return GuardrailDecision(False, REJECTION_REASON)
         return GuardrailDecision(True)
@@ -209,11 +233,18 @@ def validate_scope_llm(query: str) -> GuardrailDecision:
 
 
 def validate_scope_programmatic(query: str) -> GuardrailDecision:
+    """
+    Deterministic Programmatic Guardrail check (regex + keywords).
+    This runs first to intercept obvious bad queries without calling the LLM.
+    """
+    # Normalize whitespaces and convert to lowercase
     text = " ".join(query.lower().split())
 
+    # 1. Fail Closed on empty inputs
     if not text:
         return GuardrailDecision(False, REJECTION_REASON)
 
+    # 2. Match negative filter patterns
     if _matches_any(text, _ILLEGAL_INTENT_PATTERNS):
         return GuardrailDecision(False, REJECTION_REASON)
 
@@ -226,6 +257,7 @@ def validate_scope_programmatic(query: str) -> GuardrailDecision:
     if _matches_any(text, _GENERAL_PROGRAMMING_PATTERNS):
         return GuardrailDecision(False, REJECTION_REASON)
 
+    # 3. Check for presence of positive scraping domain keywords
     allowed = any(
         [
             _contains_any(text, _SCRAPING_TERMS),
@@ -239,6 +271,9 @@ def validate_scope_programmatic(query: str) -> GuardrailDecision:
     if not allowed:
         return GuardrailDecision(False, REJECTION_REASON)
 
+    # 4. Specific CAPTCHA guardrail constraint:
+    # CAPTCHA questions are ONLY allowed if they request high-level concepts/detection/ethics.
+    # Otherwise, reject to prevent bypass query slip-throughs.
     if _contains_any(text, _CAPTCHA_TERMS):
         high_level_terms = {"detect", "detection", "identify", "handle", "handling", "strategy", "ethical", "legal"}
         if not any(term in text for term in high_level_terms):
@@ -248,6 +283,11 @@ def validate_scope_programmatic(query: str) -> GuardrailDecision:
 
 
 def validate_scope(query: str) -> GuardrailDecision:
+    """
+    Consolidated validation interface.
+    1. First checks programmatic rules (fast, cheap, deterministic).
+    2. If programmatic checks pass and API keys are available, runs the LLM semantic check.
+    """
     # 1. Programmatic guardrail check (first line of defense)
     decision = validate_scope_programmatic(query)
     if not decision.allowed:

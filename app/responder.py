@@ -1,12 +1,20 @@
 import os
+# pyrefly: ignore [missing-import]
 from langchain_core.runnables import RunnableLambda
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
+# =====================================================================
+# LOCAL RULE-BASED FALLBACK GENERATOR
+# =====================================================================
+# This function generates high-level educational explanations when running 
+# offline (without LLM API keys). It scans the lowercase query for key concepts 
+# and returns predefined responses matching the scope topics.
 
 def _build_answer_fallback(query: str) -> str:
     text = query.lower()
 
+    # Topic 3: CAPTCHAs
     if "captcha" in text or "recaptcha" in text or "hcaptcha" in text:
         return (
             "CAPTCHAs should be treated as an access-control signal. A compliant scraper should detect their presence, "
@@ -14,6 +22,7 @@ def _build_answer_fallback(query: str) -> str:
             "paths such as official APIs or human-in-the-loop review. The agent will not provide bypass instructions."
         )
 
+    # Topic 4: Headless Browsers
     if "headless" in text or "playwright" in text or "puppeteer" in text or "selenium" in text:
         return (
             "Headless browsers help scraping workflows by loading pages like a real browser, executing JavaScript, "
@@ -21,6 +30,7 @@ def _build_answer_fallback(query: str) -> str:
             "but should be used with rate limits, robots.txt awareness, and respect for site terms."
         )
 
+    # Topic 2: JS Rendering / Dynamic Pages
     if "javascript" in text or "js" in text or "dynamic" in text or "spa" in text:
         return (
             "JavaScript-rendered websites often deliver minimal initial HTML and populate content after client-side "
@@ -28,6 +38,7 @@ def _build_answer_fallback(query: str) -> str:
             "waiting for stable rendered content, and avoiding excessive automated traffic."
         )
 
+    # Topic 5: Legal and Ethical scraping
     if "legal" in text or "ethical" in text or "terms" in text or "robots" in text or "permission" in text:
         return (
             "Ethical scraping starts with permission, transparency, and restraint. Review robots.txt, terms of service, "
@@ -35,6 +46,7 @@ def _build_answer_fallback(query: str) -> str:
             "appropriate, and prefer official APIs when available."
         )
 
+    # Topic 1: General Web Scraping Concepts (Fallback default)
     return (
         "Web scraping is the process of collecting information from web pages in a structured way. At a high level, "
         "a responsible workflow identifies permitted sources, retrieves pages carefully, parses relevant public data, "
@@ -42,7 +54,12 @@ def _build_answer_fallback(query: str) -> str:
     )
 
 
+# =====================================================================
+# LLM INSTANTIATION LOGIC
+# =====================================================================
+
 def has_llm_credentials() -> bool:
+    """Detects presence of model provider API keys."""
     return bool(
         os.environ.get("OPENAI_API_KEY")
         or os.environ.get("GEMINI_API_KEY")
@@ -51,6 +68,11 @@ def has_llm_credentials() -> bool:
 
 
 def get_llm():
+    """
+    Creates LLM clients. 
+    Prefers OpenAI ChatOpenAI (gpt-4o-mini) and falls back to Google's 
+    ChatGoogleGenerativeAI (gemini-2.5-flash). Sets temperature to 0.0.
+    """
     if os.environ.get("OPENAI_API_KEY"):
         try:
             from langchain_openai import ChatOpenAI
@@ -67,6 +89,13 @@ def get_llm():
     return None
 
 
+# =====================================================================
+# ANSWER GENERATION PROMPT (LLM Constraints)
+# =====================================================================
+# The prompt restricts the LLM to explanatory, high-level answers.
+# It explicitly forbids generating code snippets, implementation scripts, 
+# or bypass guides. It also enforces plain-text outputs (no Markdown bolding 
+# or lists) to ensure the client receives clean, unstyled text.
 RESPONDER_PROMPT = ChatPromptTemplate.from_messages([
     ("system", (
         "You are a helpful AI assistant specialized in web scraping.\n"
@@ -80,17 +109,28 @@ RESPONDER_PROMPT = ChatPromptTemplate.from_messages([
 
 
 def _llm_responder(query: str) -> str:
+    """
+    Connects prompt templates with the target LLM and parses the 
+    result as plain string. If API errors or import issues occur, 
+    falls back to the static keyword templates.
+    """
     llm = get_llm()
     if not llm:
         return _build_answer_fallback(query)
     try:
+        # LangChain expression: Prompt | Model | Parser
         chain = RESPONDER_PROMPT | llm | StrOutputParser()
         return chain.invoke({"query": query})
     except Exception:
         return _build_answer_fallback(query)
 
 
-# Fallback to the local generator using a RunnableLambda
+# =====================================================================
+# RUNNABLE COMPATIBILITY WRAPPER
+# =====================================================================
+# We wrap our logic inside a RunnableLambda. This is a LangChain abstraction 
+# that converts standard Python functions into runnable chains, making them 
+# compatible with other chains, inputs, and LangGraph node executions.
 response_chain = RunnableLambda(
     lambda inputs: _llm_responder(inputs["query"])
     if isinstance(inputs, dict) and "query" in inputs
@@ -99,4 +139,8 @@ response_chain = RunnableLambda(
 
 
 def generate_answer(query: str) -> str:
+    """
+    The main interface for generating answers. Invokes our wrapped 
+    runnable chain and returns the final string response.
+    """
     return response_chain.invoke(query)
